@@ -16,8 +16,8 @@ use dom::bindings::trace::JSTraceable;
 use dom::document::Document;
 use dom::node::Node;
 use dom::window::Window;
-use encoding::all::UTF_8;
-use encoding::types::{DecoderTrap, Encoding};
+use encoding::codec::utf_8::UTF8Decoder;
+use encoding::types::{DecoderTrap, Encoding, RawDecoder};
 use html5ever::tokenizer;
 use html5ever::tree_builder;
 use html5ever::tree_builder::{TreeBuilder, TreeBuilderOpts};
@@ -65,6 +65,8 @@ pub struct ParserContext {
     subpage: Option<SubpageId>,
     /// The URL for this document.
     url: Url,
+    /// The UTF-8 decoder.
+    decoder: Box<RawDecoder + Send>,
 }
 
 impl ParserContext {
@@ -75,6 +77,7 @@ impl ParserContext {
             id: id,
             subpage: subpage,
             url: url,
+            decoder: UTF8Decoder::new(),
         }
     }
 }
@@ -155,8 +158,14 @@ impl AsyncResponseListener for ParserContext {
 
     fn data_available(&mut self, payload: Vec<u8>) {
         if !self.is_synthesized_document {
-            // FIXME: use Vec<u8> (html5ever #34)
-            let data = UTF_8.decode(&payload, DecoderTrap::Replace).unwrap();
+            let mut data = String::new();
+            // let data = UTF_8.decode(&payload, DecoderTrap::Replace).unwrap();
+            // FIXME we're igoring offset for now
+            let (_offset, err) = self.decoder.raw_feed(&payload, &mut data);
+
+            // TODO
+            // err.unwrap();
+
             let parser = match self.parser.as_ref() {
                 Some(parser) => parser.root(),
                 None => return,
@@ -166,10 +175,17 @@ impl AsyncResponseListener for ParserContext {
     }
 
     fn response_complete(&mut self, status: Result<(), NetworkError>) {
+        let mut data = String::new();
+        let err =  self.decoder.raw_finish(&mut data);
+        // TODO
+        // err.unwrap();
+
         let parser = match self.parser.as_ref() {
             Some(parser) => parser.root(),
             None => return,
         };
+        parser.r().parse_chunk(data);
+
         parser.r().document().finish_load(LoadType::PageSource(self.url.clone()));
 
         if let Err(err) = status {
